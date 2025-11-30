@@ -1,0 +1,10 @@
+[package]
+name = "ubitix"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+log = "0.4.28"
+octocrab = "0.48.0"
+regex = "1.12.2"
+simplelog = "0.12.2"
