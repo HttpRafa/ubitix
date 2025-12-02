@@ -4,10 +4,11 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-tokio = { version = "1.48.0", features = ["rt", "rt-multi-thread", "macros"] }
+tokio = { version = "1.48.0", features = ["rt", "rt-multi-thread", "macros", "fs", "io-util"] }
 clap = { version = "4.5.53", features = ["derive"] }
 log = "0.4.28"
-octocrab = "0.48.0"
+octocrab = "0.48.1"
 regex = "1.12.2"
 simplelog = "0.12.2"
 color-eyre = "0.6.5"
+notify = "8.2.0"

@@ -11,7 +11,11 @@ pub struct Action {
 
 impl Action {
     pub fn new(prefix: Ipv6Addr, subnet: u8, directory: PathBuf) -> Self {
-        Self { prefix, subnet, directory }
+        Self {
+            prefix,
+            subnet,
+            directory,
+        }
     }
 
     pub async fn run(self) -> Result<()> {
