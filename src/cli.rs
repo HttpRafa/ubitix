@@ -22,9 +22,17 @@ pub enum Commands {
         )]
         regex: String,
 
-        #[arg(long, help = "Example: HttpRafa/infrastructure")]
+        #[arg(
+            long,
+            value_name = "GITHUB_TOKEN"
+        )]
+        token: String,
+
+        #[arg(long, value_name = "OWNER", help = "Example: HttpRafa")]
+        owner: String,
+        #[arg(long, value_name = "REPOSITORY", help = "Example: infrastructure")]
         repository: String,
-        #[arg(long, help = "Example: update_prefix")]
+        #[arg(long, value_name = "WORKFLOW", help = "Example: update_prefix.yml")]
         workflow: String,
     },
     /// Enable action mode

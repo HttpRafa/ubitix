@@ -11,6 +11,7 @@ use crate::{
 mod action;
 mod cli;
 mod gateway;
+mod common;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -33,12 +34,16 @@ async fn main() -> Result<()> {
         Some(Commands::Gateway {
             file,
             regex,
+            token,
+            owner,
             repository,
             workflow,
         }) => {
             let gateway = Gateway::new(
                 file.clone(),
                 regex.clone(),
+                token.clone(),
+                owner.clone(),
                 repository.clone(),
                 workflow.clone(),
             )?;

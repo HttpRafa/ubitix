@@ -972,6 +972,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "ipnet"
+version = "2.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "469fb0b9cefa57e3ef31275ee7cacb78f2fdca44e4765491884a2b119d4eb130"
+
+[[package]]
 name = "iri-string"
 version = "0.7.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2160,6 +2166,7 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "color-eyre",
+ "ipnet",
  "log",
  "notify",
  "octocrab",
