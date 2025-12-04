@@ -1,0 +1,21 @@
+# The file path to monitor.
+file = "/var/log/messages"
+
+# The regular expression used for log matching.
+# Note: Backslashes in TOML strings need to be escaped if they are meant literally.
+regex = "Adding PD prefix ([\\da-fA-F:]+/\\d{1,3})"
+
+# A list of networks to process.
+networks = []
+
+# The GitHub access token
+token = "some-token"
+
+# The GitHub repository owner.
+owner = "some-username"
+
+# The GitHub repository name.
+repository = "some-repository"
+
+# The workflow file name to trigger.
+workflow = "some-workflow.yml"

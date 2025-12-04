@@ -3,11 +3,7 @@ use color_eyre::eyre::Result;
 use log::info;
 use simplelog::{ColorChoice, Config, LevelFilter, TermLogger, TerminalMode};
 
-use crate::{
-    action::Action,
-    cli::{Cli, Commands},
-    gateway::Gateway,
-};
+use crate::{cli::Cli, gateway::Gateway};
 
 mod action;
 mod cli;
@@ -31,34 +27,17 @@ async fn main() -> Result<()> {
     // Parse command line arguments
     let cli = Cli::parse();
 
-    match &cli.command {
-        Some(Commands::Gateway {
-            file,
-            regex,
-            network,
-            token,
-            owner,
-            repository,
-            workflow,
-        }) => {
-            let mut gateway = Gateway::new(
-                file.clone(),
-                regex.clone(),
-                network.clone(),
-                token.clone(),
-                owner.clone(),
-                repository.clone(),
-                workflow.clone(),
-            )
-            .await?;
-            info!("Startup finished!");
-            gateway.run().await
-        }
-        Some(Commands::Action { prefix, directory }) => {
-            let action = Action::new(*prefix, directory.clone());
-            info!("Startup finished!");
-            action.run().await
-        }
-        None => Ok(()),
+    if cli.gateway {
+        let mut gateway = Gateway::load().await?;
+        info!("Startup finished!");
+        info!("Starting file watcher...");
+        gateway.run().await
+    } else if cli.action {
+        //let action = Action::new(*prefix, directory.clone());
+        //    info!("Startup finished!");
+        //    action.run().await
+        Ok(())
+    } else {
+        Ok(())
     }
 }
