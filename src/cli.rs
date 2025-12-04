@@ -1,6 +1,8 @@
-use std::{net::Ipv6Addr, path::PathBuf};
+use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
+use ipnet::Ipv6Net;
+use regex::Regex;
 
 #[derive(Parser)]
 pub struct Cli {
@@ -18,14 +20,14 @@ pub enum Commands {
         #[arg(
             long,
             value_name = "REGEX",
-            help = "Example: Adding PD prefix ([\\da-fA-F:]+)/(\\d{1,3})"
+            help = "Example: Adding PD prefix ([\\da-fA-F:]+/\\d{1,3})"
         )]
-        regex: String,
+        regex: Regex,
 
-        #[arg(
-            long,
-            value_name = "GITHUB_TOKEN"
-        )]
+        #[arg(long, value_name = "NETWORK", help = "Example: fd00::/60")]
+        network: Vec<Ipv6Net>,
+
+        #[arg(long, value_name = "GITHUB_TOKEN", help = "Example: <TOKEN>")]
         token: String,
 
         #[arg(long, value_name = "OWNER", help = "Example: HttpRafa")]
@@ -37,10 +39,8 @@ pub enum Commands {
     },
     /// Enable action mode
     Action {
-        #[arg(long, value_name = "PREFIX", help = "Example: 2a02:7123:2562")]
-        prefix: Ipv6Addr,
-        #[arg(long, value_name = "SUBNET", help = "Example: 59")]
-        subnet: u8,
+        #[arg(long, value_name = "PREFIX", help = "Example: 2a02:7123:2562::/59")]
+        prefix: Ipv6Net,
 
         #[arg(long, value_name = "DIRECTORY", help = "Example: cloudflare/")]
         directory: PathBuf,

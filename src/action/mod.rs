@@ -1,21 +1,17 @@
-use std::{net::Ipv6Addr, path::PathBuf};
+use std::path::PathBuf;
 
 use color_eyre::eyre::Result;
+use ipnet::Ipv6Net;
 
 pub struct Action {
-    prefix: Ipv6Addr,
-    subnet: u8,
+    prefix: Ipv6Net,
 
     directory: PathBuf,
 }
 
 impl Action {
-    pub fn new(prefix: Ipv6Addr, subnet: u8, directory: PathBuf) -> Self {
-        Self {
-            prefix,
-            subnet,
-            directory,
-        }
+    pub fn new(prefix: Ipv6Net, directory: PathBuf) -> Self {
+        Self { prefix, directory }
     }
 
     pub async fn run(self) -> Result<()> {

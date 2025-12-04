@@ -1,16 +1,19 @@
-use std::{io::SeekFrom, path::PathBuf, str::FromStr};
+use std::{collections::HashMap, io::SeekFrom, path::PathBuf, str::FromStr};
 
-use color_eyre::eyre::Result;
+use color_eyre::eyre::{Result, eyre};
 use ipnet::Ipv6Net;
-use log::error;
+use log::{debug, error, info, warn};
 use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher};
 use octocrab::Octocrab;
 use regex::Regex;
+use serde::{Deserialize, Serialize};
 use tokio::{
     fs::File,
     io::{AsyncBufReadExt, AsyncSeekExt, BufReader},
     sync::mpsc::channel,
 };
+
+use crate::common::storage::{LoadFromTomlFile, SaveToTomlFile, gateway_file};
 
 const CHANNEL_BUFFER_SIZE: usize = 32;
 
@@ -18,47 +21,125 @@ pub struct Gateway {
     /* Configuration */
     file: PathBuf,
     regex: Regex,
+    networks: Vec<Ipv6Net>,
     owner: String,
     repository: String,
     workflow: String,
 
     /* Runtime */
     octocrab: Octocrab,
+    data: Data,
+}
+
+#[derive(Serialize, Deserialize, Default)]
+struct Data {
     current: Ipv6Net,
 }
 
 impl Gateway {
-    pub fn new(file: PathBuf, regex: String, token: String, owner: String, repository: String, workflow: String) -> Result<Self> {
+    pub async fn new(
+        file: PathBuf,
+        regex: Regex,
+        networks: Vec<Ipv6Net>,
+        token: String,
+        owner: String,
+        repository: String,
+        workflow: String,
+    ) -> Result<Self> {
         Ok(Self {
             file,
-            regex: Regex::new(&regex)?,
+            regex,
+            networks,
             owner,
             repository,
             workflow,
             octocrab: Octocrab::builder().personal_token(token).build()?,
-            current: Ipv6Net::from_str("2001::/64")?,
+            data: Data::from_file(&gateway_file()?).await.unwrap_or_default(),
         })
     }
 
-    async fn dispatch(&self, _prefix: Ipv6Net) -> Result<()> {
-        self.octocrab.actions().create_workflow_dispatch(&self.owner, &self.repository, &self.workflow, "ref").send().await?;
-        Ok(())   
+    async fn set_current(&mut self, prefix: Ipv6Net) -> Result<()> {
+        self.data.current = prefix;
+        self.data.save(&gateway_file()?, true).await?;
+        Ok(())
     }
 
-    async fn handle_line(&self, line: String) -> Result<()> {
+    async fn dispatch(&self, mapping: &HashMap<Ipv6Net, Ipv6Net>) -> Result<()> {
+        self.octocrab
+            .actions()
+            .create_workflow_dispatch(&self.owner, &self.repository, &self.workflow, "ref")
+            .send()
+            .await?;
+        Ok(())
+    }
+
+    async fn handle_line(&mut self, line: String) -> Result<()> {
+        debug!("> {line}");
         if let Some(captures) = self.regex.captures(&line)
             && let Some(prefix) = captures.get(1)
         {
             let prefix = Ipv6Net::from_str(prefix.as_str())?;
-            if self.current != prefix {
-                self.dispatch(prefix).await?;
-                // TODO: Change iptable rules
+
+            if self.data.current != prefix {
+                info!("Prefix change detected: {} -> {prefix}", self.data.current);
+                self.set_current(prefix).await?;
+
+                if prefix.prefix_len() > 64 {
+                    return Err(eyre!(
+                        "The detected prefix must be /64 or shorter to be split into /64 subnets."
+                    ));
+                }
+
+                let required = self.networks.len();
+                let subnets = prefix.subnets(64)?;
+                let available = subnets.count();
+
+                if required > available {
+                    return Err(eyre!(
+                        "The prefix {} ({}) does not have enough /64 networks for your setup ({} required, only {} available)",
+                        prefix,
+                        prefix.prefix_len(),
+                        required,
+                        available
+                    ));
+                }
+
+                let mapping = subnets
+                    .collect::<Vec<_>>()
+                    .into_iter()
+                    .rev()
+                    .take(required)
+                    .zip(self.networks.iter().cloned())
+                    .filter_map(|(to, from)| {
+                        if from.prefix_len() != 64 {
+                            warn!("Assigned subnet {from} is not a /64. Skipping this mapping.");
+                            None
+                        } else if to.prefix_len() != 64 {
+                            warn!("Assigned subnet {to} is not a /64. Skipping this mapping.");
+                            None
+                        } else {
+                            Some((from, to))
+                        }
+                    })
+                    .collect::<HashMap<_, _>>();
+
+                for (to, from) in &mapping {
+                    info!("{from} - [NPTv6] -> {to}")
+                }
+                
+                info!("Updating iptables...");
+
+                if let Err(error) = self.dispatch(&mapping).await {
+                    error!("Failed to dispatch Github Workflow: {error:?}");
+                }
+            } else {
+                warn!("Useless change detected: {} -> {prefix}", self.data.current);
             }
         }
         Ok(())
     }
 
-    pub async fn run(&self) -> Result<()> {
+    pub async fn run(&mut self) -> Result<()> {
         let mut file = File::open(&self.file).await?;
         let mut position = self.file.metadata()?.len();
 
@@ -98,3 +179,6 @@ impl Gateway {
         Ok(())
     }
 }
+
+impl SaveToTomlFile for Data {}
+impl LoadFromTomlFile for Data {}
