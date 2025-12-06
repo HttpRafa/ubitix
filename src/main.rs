@@ -28,7 +28,7 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     if cli.gateway {
-        let mut gateway = Gateway::load().await?;
+        let gateway = Gateway::load().await?;
         info!("Startup finished!");
         info!("Starting file watcher...");
         gateway.run().await
