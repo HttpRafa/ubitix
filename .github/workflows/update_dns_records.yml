@@ -17,4 +17,4 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Echo inputs
-        run: echo "${{ github.event.inputs }}"
+        run: echo "${{ github.event.inputs.prefix }} and ${{ github.event.inputs.mapping }}"

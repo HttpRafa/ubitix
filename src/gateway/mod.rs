@@ -101,7 +101,7 @@ impl Gateway {
             )
             .inputs(json!({
                 "prefix": prefix,
-                "mapping": mapping,
+                "mapping": format!("{}", json!(mapping)),
             }))
             .send()
             .await?;
