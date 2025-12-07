@@ -1,6 +1,6 @@
 use clap::Parser;
 use color_eyre::eyre::Result;
-use log::info;
+use log::{info, warn};
 use simplelog::{ColorChoice, Config, LevelFilter, TermLogger, TerminalMode};
 
 use crate::{cli::Cli, gateway::Gateway};
@@ -15,17 +15,21 @@ async fn main() -> Result<()> {
     // Init error crate
     color_eyre::install()?;
 
+    // Parse command line arguments
+    let cli = Cli::parse();
+
     // Init logging crate
     TermLogger::init(
-        LevelFilter::Debug,
+        if cli.debug {
+            LevelFilter::Debug
+        } else {
+            LevelFilter::Info
+        },
         Config::default(),
         TerminalMode::Stdout,
         ColorChoice::Auto,
     )
     .expect("Failed to init logging crate");
-
-    // Parse command line arguments
-    let cli = Cli::parse();
 
     if cli.gateway {
         let gateway = Gateway::load().await?;
@@ -38,6 +42,7 @@ async fn main() -> Result<()> {
         //    action.run().await
         Ok(())
     } else {
+        warn!("Please enable a mode. Use: --help for more information");
         Ok(())
     }
 }
