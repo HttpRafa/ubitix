@@ -14,7 +14,7 @@ pub fn config_gateway_file() -> Result<PathBuf> {
     Err(eyre!("Failed to find a location for the gateway.toml file"))
 }
 
-pub fn data_gateway_file() -> Result<PathBuf> {
+pub fn state_gateway_file() -> Result<PathBuf> {
     if let Some(directories) = ProjectDirs::from("io", "httprafa", "ubitix") {
         return Ok(directories.data_local_dir().join(GATEWAY_FILE_NAME));
     }

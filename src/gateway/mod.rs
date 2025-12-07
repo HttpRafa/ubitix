@@ -1,17 +1,20 @@
-use std::{collections::HashMap, path::PathBuf, str::FromStr};
+use std::{collections::HashMap, error::Error, path::PathBuf, str::FromStr};
 
 use color_eyre::eyre::{Result, eyre};
 use ipnet::Ipv6Net;
 use iptables::IPTables;
 use log::{debug, error, info, warn};
-use notify::Watcher;
 use octocrab::Octocrab;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use tokio::fs;
 
 use crate::{
-    common::storage::{LoadFromTomlFile, SaveToTomlFile, config_gateway_file, data_gateway_file},
+    common::{
+        Inputs, State,
+        storage::{LoadFromTomlFile, SaveToTomlFile, config_gateway_file, state_gateway_file},
+    },
     gateway::{subnet::SubnetCalculator, watcher::FileWatcher},
 };
 
@@ -26,7 +29,7 @@ pub struct Gateway {
     configuration: Configuration,
 
     /* State */
-    data: Data,
+    state: State,
 
     /* Runtime */
     iptables: IPTables,
@@ -43,11 +46,6 @@ struct Configuration {
     owner: String,
     repository: String,
     workflow: String,
-}
-
-#[derive(Serialize, Deserialize, Default)]
-struct Data {
-    last_prefix: Ipv6Net,
 }
 
 impl Gateway {
@@ -70,20 +68,25 @@ impl Gateway {
             octocrab: Octocrab::builder()
                 .personal_token(configuration.token.clone())
                 .build()?,
-            data: Data::from_file(&data_gateway_file()?)
+            state: State::from_file(&state_gateway_file()?)
                 .await
                 .unwrap_or_default(),
             configuration,
         })
     }
 
-    async fn set_last_prefix(&mut self, prefix: Ipv6Net) -> Result<()> {
-        self.data.last_prefix = prefix;
-        self.data.save(&data_gateway_file()?, true).await?;
+    async fn update_state(
+        &mut self,
+        prefix: Ipv6Net,
+        mapping: HashMap<Ipv6Net, Ipv6Net>,
+    ) -> Result<()> {
+        self.state.prefix = prefix;
+        self.state.mapping = mapping;
+        self.state.save(&state_gateway_file()?, true).await?;
         Ok(())
     }
 
-    async fn dispatch(&self, _mapping: &HashMap<Ipv6Net, Ipv6Net>) -> Result<()> {
+    async fn dispatch_workflow(&self, mapping: HashMap<Ipv6Net, Ipv6Net>) -> Result<()> {
         self.octocrab
             .actions()
             .create_workflow_dispatch(
@@ -92,8 +95,45 @@ impl Gateway {
                 &self.configuration.workflow,
                 "ref",
             )
+            .inputs(json!(Inputs { mapping }))
             .send()
             .await?;
+        Ok(())
+    }
+
+    async fn append_rules(
+        &self,
+        public: &Ipv6Net,
+        private: &Ipv6Net,
+    ) -> Result<(), Box<dyn Error>> {
+        self.iptables.append(
+            "nat",
+            "POSTROUTING",
+            &format!("-s {private} -j NETMAP --to {public}"),
+        )?;
+        self.iptables.append(
+            "nat",
+            "PREROUTING",
+            &format!("-d {public} -j NETMAP --to {private}"),
+        )?;
+        Ok(())
+    }
+
+    async fn delete_rules(
+        &self,
+        public: &Ipv6Net,
+        private: &Ipv6Net,
+    ) -> Result<(), Box<dyn Error>> {
+        self.iptables.delete(
+            "nat",
+            "POSTROUTING",
+            &format!("-s {private} -j NETMAP --to {public}"),
+        )?;
+        self.iptables.delete(
+            "nat",
+            "PREROUTING",
+            &format!("-d {public} -j NETMAP --to {private}"),
+        )?;
         Ok(())
     }
 
@@ -104,42 +144,35 @@ impl Gateway {
         {
             let prefix = Ipv6Net::from_str(prefix.as_str())?;
 
-            if self.data.last_prefix != prefix {
-                info!(
-                    "Prefix change detected: {} -> {prefix}",
-                    self.data.last_prefix
-                );
+            if self.state.prefix != prefix {
+                info!("Prefix change detected: {} -> {prefix}", self.state.prefix);
 
-                let mapping = SubnetCalculator::calc(&prefix, &self.configuration.networks).await?;
-
-                info!("Generating {} new NPTv6 rules:", mapping.len() * 2);
-                for (to, from) in &mapping {
-                    info!("{from} <---> {to}");
-                    self.iptables
-                        .append(
-                            "nat",
-                            "POSTROUTING",
-                            &format!("-s {from} -j NETMAP --to {to}"),
-                        )
-                        .map_err(|error| eyre!("{error:?}"))?;
-                    self.iptables
-                        .append(
-                            "nat",
-                            "PREROUTING",
-                            &format!("-d {to} -j NETMAP --to {from}"),
-                        )
-                        .map_err(|error| eyre!("{error:?}"))?;
+                info!("Deleting {} old NPTv6 rules:", self.state.mapping.len());
+                for (public, private) in &self.state.mapping {
+                    info!("-: {public} <---> {private}");
+                    if let Err(error) = self.delete_rules(public, private).await {
+                        error!("Failed to delete iptables rules: {:?}", eyre!("{error}"));
+                    }
                 }
 
-                if let Err(error) = self.dispatch(&mapping).await {
+                let mapping = SubnetCalculator::calc(&prefix, &self.configuration.networks).await?;
+                info!("Appending {} new NPTv6 rules:", mapping.len() * 2);
+                for (public, private) in &mapping {
+                    info!("+: {public} <---> {private}");
+                    if let Err(error) = self.append_rules(public, private).await {
+                        error!("Failed to append iptables rules: {:?}", eyre!("{error}"));
+                    }
+                }
+
+                if let Err(error) = self.dispatch_workflow(mapping.clone()).await {
                     error!("Failed to dispatch Github Workflow: {error:?}");
                 }
 
-                self.set_last_prefix(prefix).await?;
+                self.update_state(prefix, mapping).await?;
             } else {
                 warn!(
                     "Duplicate prefix change detected: {} -> {prefix}",
-                    self.data.last_prefix
+                    self.state.prefix
                 );
             }
         }
@@ -162,5 +195,5 @@ impl Gateway {
 impl SaveToTomlFile for Configuration {}
 impl LoadFromTomlFile for Configuration {}
 
-impl SaveToTomlFile for Data {}
-impl LoadFromTomlFile for Data {}
+impl SaveToTomlFile for State {}
+impl LoadFromTomlFile for State {}

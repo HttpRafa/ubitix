@@ -2305,6 +2305,7 @@ dependencies = [
  "octocrab",
  "regex",
  "serde",
+ "serde_json",
  "simplelog",
  "tokio",
  "toml",

@@ -37,15 +37,15 @@ impl SubnetCalculator {
             .rev()
             .take(required)
             .zip(private_networks.iter().cloned())
-            .filter_map(|(to, from)| {
-                if from.prefix_len() != 64 {
-                    warn!("Assigned subnet {from} is not a /64. Skipping this mapping.");
+            .filter_map(|(public, private)| {
+                if public.prefix_len() != 64 {
+                    warn!("Assigned subnet {public} is not a /64. Skipping this mapping.");
                     None
-                } else if to.prefix_len() != 64 {
-                    warn!("Assigned subnet {to} is not a /64. Skipping this mapping.");
+                } else if private.prefix_len() != 64 {
+                    warn!("Assigned subnet {private} is not a /64. Skipping this mapping.");
                     None
                 } else {
-                    Some((from, to))
+                    Some((public, private))
                 }
             })
             .collect::<HashMap<_, _>>();
