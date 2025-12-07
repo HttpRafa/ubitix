@@ -2,7 +2,16 @@ name: Update DNS records [TEST]
 
 on:
   workflow_dispatch:
-
+    inputs:
+      prefix:
+        type: string
+        description: "IPv6 Prefix"
+        required: true
+      mapping:
+        type: string
+        description: "IPv6 to IPv6 Mapping"
+        required: true
+      
 jobs:
   update:
     runs-on: ubuntu-latest

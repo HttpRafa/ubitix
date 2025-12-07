@@ -12,7 +12,7 @@ use tokio::fs;
 
 use crate::{
     common::{
-        Inputs, State,
+        State,
         storage::{LoadFromTomlFile, SaveToTomlFile, config_gateway_file, state_gateway_file},
     },
     gateway::{subnet::SubnetCalculator, watcher::FileWatcher},
@@ -86,16 +86,23 @@ impl Gateway {
         Ok(())
     }
 
-    async fn dispatch_workflow(&self, mapping: HashMap<Ipv6Net, Ipv6Net>) -> Result<()> {
+    async fn dispatch_workflow(
+        &self,
+        prefix: &Ipv6Net,
+        mapping: &HashMap<Ipv6Net, Ipv6Net>,
+    ) -> Result<()> {
         self.octocrab
             .actions()
             .create_workflow_dispatch(
                 &self.configuration.owner,
                 &self.configuration.repository,
                 &self.configuration.workflow,
-                "ref",
+                "main",
             )
-            .inputs(json!(Inputs { mapping }))
+            .inputs(json!({
+                "prefix": prefix,
+                "mapping": mapping,
+            }))
             .send()
             .await?;
         Ok(())
@@ -164,7 +171,7 @@ impl Gateway {
                     }
                 }
 
-                if let Err(error) = self.dispatch_workflow(mapping.clone()).await {
+                if let Err(error) = self.dispatch_workflow(&prefix, &mapping).await {
                     error!("Failed to dispatch Github Workflow: {error:?}");
                 }
 

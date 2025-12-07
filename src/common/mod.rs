@@ -10,8 +10,3 @@ pub struct State {
     pub prefix: Ipv6Net,
     pub mapping: HashMap<Ipv6Net, Ipv6Net>,
 }
-
-#[derive(Serialize, Deserialize)]
-pub struct Inputs {
-    pub mapping: HashMap<Ipv6Net, Ipv6Net>,
-}
