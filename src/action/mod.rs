@@ -1,67 +1,122 @@
-use std::{env, path::PathBuf};
+use std::{collections::BTreeMap, env, net::Ipv6Addr, path::PathBuf, str::FromStr};
 
-use color_eyre::eyre::{Context, Result, eyre};
+use color_eyre::eyre::{Context, Result};
 use ipnet::Ipv6Net;
-use serde::Deserialize;
-use tokio::fs;
+use log::{debug, info, warn};
+use serde::{Deserialize, Serialize};
 
 use crate::common::{
-    Ipv6Mapping,
-    storage::{LoadFromTomlFile, config_action_file},
+    Ipv6AddrMapping, Ipv6NetMapping,
+    storage::{LoadFromTomlFile, SaveToTomlFile, config_action_file},
 };
-
-const DEFAULT_CONFIG: &str =
-    include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/configs/ubitix.toml"));
 
 pub const PREFIX_ENVIRONMENT: &str = "IPV6_PREFIX";
 pub const MAPPING_ENVIRONMENT: &str = "IPV6_MAPPING";
 
 pub struct Action {
     /* Environment */
-    prefix: Ipv6Net,
-    mapping: Ipv6Mapping,
+    _prefix: Ipv6Net,
+    mapping: Ipv6NetMapping,
 
     /* Configuration */
     configuration: Configuration,
 }
 
-#[derive(Deserialize)]
-struct Configuration {
-    directory: PathBuf,
-}
-
 #[derive(Serialize, Deserialize)]
 struct Configuration {
-    dictionary: PathBuf,
+    directory: PathBuf,
+    devices: Ipv6AddrMapping,
 }
 
 impl Action {
     pub async fn load() -> Result<Self> {
-        let prefix = env::var(PREFIX_ENVIRONMENT).wrap_err_with(|| format!("Please provide the IPv6 Prefix using the environment variable: {PREFIX_ENVIRONMENT}"))?.parse::<Ipv6Net>()?;
-        let mapping = serde_json::from_str::<Ipv6Mapping>(&env::var(PREFIX_ENVIRONMENT).wrap_err_with(|| format!("Please provide the IPv6 Mappings using the environment variable: {MAPPING_ENVIRONMENT}"))?)?;
+        let _prefix = env::var(PREFIX_ENVIRONMENT).wrap_err_with(|| format!("Please provide the IPv6 Prefix using the environment variable: {PREFIX_ENVIRONMENT}"))?.parse()?;
+        let mapping = serde_json::from_str(&env::var(MAPPING_ENVIRONMENT).wrap_err_with(|| format!("Please provide the IPv6 Mappings using the environment variable: {MAPPING_ENVIRONMENT}"))?)?;
 
         let configuration = Configuration::from_file(&{
             let file = config_action_file()?;
             if !file.exists() {
-                if let Some(parent) = file.parent() {
-                    fs::create_dir_all(parent).await?;
+                Configuration {
+                    directory: PathBuf::from("records/"),
+                    devices: BTreeMap::from([(
+                        Ipv6Addr::from_str("fd0a::1")?,
+                        Ipv6Addr::from_str("fd0a::1")?,
+                    )]),
                 }
-                fs::write(&file, DEFAULT_CONFIG).await?;
+                .save(&file, true)
+                .await?;
             }
             file
         })
         .await?;
 
         Ok(Self {
-            prefix,
+            _prefix,
             mapping,
             configuration,
         })
     }
 
-    pub async fn run(self) -> Result<()> {
+    pub async fn run(mut self) -> Result<()> {
+        let mut skipped = 0;
+        let mut changed = 0;
+
+        let valid_mappings: Vec<_> = self
+            .mapping
+            .iter()
+            .filter(|(public, private)| {
+                if private.prefix_len() != public.prefix_len() {
+                    warn!(
+                        "Prefix length mismatch. Skipping rule: Private {} != Public {}",
+                        private, public
+                    );
+                    return false;
+                }
+                true
+            })
+            .collect();
+
+        for (device_address, current_mapped_ip) in self.configuration.devices.iter_mut() {
+            if let Some((public_net, private_net)) = valid_mappings
+                .iter()
+                .find(|(_, private)| private.contains(device_address))
+            {
+                let new_public_ip =
+                    Self::calculate_target_ip(device_address, private_net, public_net);
+
+                if *current_mapped_ip != new_public_ip {
+                    debug!(
+                        "Updating device {}: {} -> {}",
+                        device_address, current_mapped_ip, new_public_ip
+                    );
+                    *current_mapped_ip = new_public_ip;
+                    changed += 1;
+                } else {
+                    skipped += 1;
+                }
+            }
+        }
+
+        info!(
+            "Run complete: {} addresses updated, {} skipped.",
+            changed, skipped
+        );
+
+        self.configuration
+            .save(&config_action_file()?, true)
+            .await?;
+
         Ok(())
+    }
+
+    fn calculate_target_ip(
+        device_address: &Ipv6Addr,
+        private_net: &Ipv6Net,
+        public_net: &Ipv6Net,
+    ) -> Ipv6Addr {
+        (device_address & private_net.hostmask()) | (public_net.addr() & public_net.netmask())
     }
 }
 
 impl LoadFromTomlFile for Configuration {}
+impl SaveToTomlFile for Configuration {}

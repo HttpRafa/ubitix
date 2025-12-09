@@ -12,7 +12,7 @@ use tokio::fs;
 
 use crate::{
     common::{
-        Ipv6Mapping, State,
+        Ipv6NetMapping, State,
         storage::{LoadFromTomlFile, SaveToTomlFile, config_gateway_file, state_gateway_file},
     },
     gateway::{subnet::SubnetCalculator, watcher::FileWatcher},
@@ -75,14 +75,14 @@ impl Gateway {
         })
     }
 
-    async fn update_state(&mut self, prefix: Ipv6Net, mapping: Ipv6Mapping) -> Result<()> {
+    async fn update_state(&mut self, prefix: Ipv6Net, mapping: Ipv6NetMapping) -> Result<()> {
         self.state.prefix = prefix;
         self.state.mapping = mapping;
         self.state.save(&state_gateway_file()?, true).await?;
         Ok(())
     }
 
-    async fn dispatch_workflow(&self, prefix: &Ipv6Net, mapping: &Ipv6Mapping) -> Result<()> {
+    async fn dispatch_workflow(&self, prefix: &Ipv6Net, mapping: &Ipv6NetMapping) -> Result<()> {
         self.octocrab
             .actions()
             .create_workflow_dispatch(
