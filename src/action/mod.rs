@@ -1,6 +1,6 @@
-use std::{env, path::PathBuf, str::FromStr};
+use std::{env, path::PathBuf};
 
-use color_eyre::eyre::{Result, eyre};
+use color_eyre::eyre::{Context, Result, eyre};
 use ipnet::Ipv6Net;
 use serde::Deserialize;
 use tokio::fs;
@@ -32,8 +32,8 @@ struct Configuration {
 
 impl Action {
     pub async fn load() -> Result<Self> {
-        let prefix = Ipv6Net::from_str(&env::var(PREFIX_ENVIRONMENT)?)?;
-        let mapping = serde_json::from_str::<Ipv6Mapping>(&env::var(MAPPING_ENVIRONMENT)?)?;
+        let prefix = env::var(PREFIX_ENVIRONMENT).wrap_err_with(|| format!("Please provide the IPv6 Prefix using the environment variable: {PREFIX_ENVIRONMENT}"))?.parse::<Ipv6Net>()?;
+        let mapping = serde_json::from_str::<Ipv6Mapping>(&env::var(PREFIX_ENVIRONMENT).wrap_err_with(|| format!("Please provide the IPv6 Mappings using the environment variable: {MAPPING_ENVIRONMENT}"))?)?;
 
         let configuration = Configuration::from_file(&{
             let file = config_action_file()?;
@@ -47,7 +47,7 @@ impl Action {
         })
         .await?;
 
-        Err(eyre!("Test"))
+        Err(eyre!("-"))
     }
 
     pub async fn run(self) -> Result<()> {
