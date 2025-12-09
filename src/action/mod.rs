@@ -47,7 +47,11 @@ impl Action {
         })
         .await?;
 
-        Err(eyre!("-"))
+        Ok(Self {
+            prefix,
+            mapping,
+            configuration,
+        })
     }
 
     pub async fn run(self) -> Result<()> {
