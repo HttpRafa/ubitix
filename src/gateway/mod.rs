@@ -1,4 +1,4 @@
-use std::{collections::HashMap, error::Error, path::PathBuf, str::FromStr};
+use std::{error::Error, path::PathBuf, str::FromStr};
 
 use color_eyre::eyre::{Result, eyre};
 use ipnet::Ipv6Net;
@@ -6,13 +6,13 @@ use iptables::IPTables;
 use log::{debug, error, info, warn};
 use octocrab::Octocrab;
 use regex::Regex;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use serde_json::json;
 use tokio::fs;
 
 use crate::{
     common::{
-        State,
+        Ipv6Mapping, State,
         storage::{LoadFromTomlFile, SaveToTomlFile, config_gateway_file, state_gateway_file},
     },
     gateway::{subnet::SubnetCalculator, watcher::FileWatcher},
@@ -37,7 +37,7 @@ pub struct Gateway {
     octocrab: Octocrab,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Deserialize)]
 struct Configuration {
     file: PathBuf,
     regex: String,
@@ -75,22 +75,14 @@ impl Gateway {
         })
     }
 
-    async fn update_state(
-        &mut self,
-        prefix: Ipv6Net,
-        mapping: HashMap<Ipv6Net, Ipv6Net>,
-    ) -> Result<()> {
+    async fn update_state(&mut self, prefix: Ipv6Net, mapping: Ipv6Mapping) -> Result<()> {
         self.state.prefix = prefix;
         self.state.mapping = mapping;
         self.state.save(&state_gateway_file()?, true).await?;
         Ok(())
     }
 
-    async fn dispatch_workflow(
-        &self,
-        prefix: &Ipv6Net,
-        mapping: &HashMap<Ipv6Net, Ipv6Net>,
-    ) -> Result<()> {
+    async fn dispatch_workflow(&self, prefix: &Ipv6Net, mapping: &Ipv6Mapping) -> Result<()> {
         self.octocrab
             .actions()
             .create_workflow_dispatch(
@@ -199,7 +191,6 @@ impl Gateway {
     }
 }
 
-impl SaveToTomlFile for Configuration {}
 impl LoadFromTomlFile for Configuration {}
 
 impl SaveToTomlFile for State {}

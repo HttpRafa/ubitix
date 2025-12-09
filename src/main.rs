@@ -3,7 +3,7 @@ use color_eyre::eyre::Result;
 use log::{info, warn};
 use simplelog::{ColorChoice, Config, LevelFilter, TermLogger, TerminalMode};
 
-use crate::{cli::Cli, gateway::Gateway};
+use crate::{action::Action, cli::Cli, gateway::Gateway};
 
 mod action;
 mod cli;
@@ -37,10 +37,9 @@ async fn main() -> Result<()> {
         info!("Starting file watcher...");
         gateway.run().await
     } else if cli.action {
-        //let action = Action::new(*prefix, directory.clone());
-        //    info!("Startup finished!");
-        //    action.run().await
-        Ok(())
+        let action = Action::load().await?;
+        info!("Startup finished!");
+        action.run().await
     } else {
         warn!("Please enable a mode. Use: --help for more information");
         Ok(())
