@@ -1,4 +1,7 @@
-use std::path::{Path, PathBuf};
+use std::{
+    env,
+    path::{Path, PathBuf},
+};
 
 use color_eyre::eyre::{Result, eyre};
 use directories::ProjectDirs;
@@ -6,6 +9,7 @@ use serde::{Serialize, de::DeserializeOwned};
 use tokio::fs;
 
 const GATEWAY_FILE_NAME: &str = "gateway.toml";
+const ACTION_FILE_NAME: &str = "ubitix.toml";
 
 pub fn config_gateway_file() -> Result<PathBuf> {
     if let Some(directories) = ProjectDirs::from("io", "httprafa", "ubitix") {
@@ -19,6 +23,10 @@ pub fn state_gateway_file() -> Result<PathBuf> {
         return Ok(directories.data_local_dir().join(GATEWAY_FILE_NAME));
     }
     Err(eyre!("Failed to find a location for the gateway.toml file"))
+}
+
+pub fn config_action_file() -> Result<PathBuf> {
+    Ok(env::current_dir()?.join(ACTION_FILE_NAME))
 }
 
 pub trait SaveToTomlFile: Serialize {
