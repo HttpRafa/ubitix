@@ -171,6 +171,7 @@ impl Gateway {
                     }
                 }
 
+                info!("Dispatching Github Workflow...");
                 if let Err(error) = self.dispatch_workflow(&prefix, &mapping).await {
                     error!("Failed to dispatch Github Workflow: {error:?}");
                 }
