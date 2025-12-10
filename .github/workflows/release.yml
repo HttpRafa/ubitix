@@ -66,7 +66,7 @@ jobs:
           BIN_NAME="ubitix"
           
           if [[ "${{ matrix.use_zig }}" == "true" ]]; then
-            BIN_PATH="target/${{ matrix.zig_target }}/release/$BIN_NAME"
+            BIN_PATH="target/${{ matrix.target }}/release/$BIN_NAME"
           else
             BIN_PATH="target/${{ matrix.target }}/release/$BIN_NAME"
           fi
