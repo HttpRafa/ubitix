@@ -1,9 +1,10 @@
-use std::{collections::BTreeMap, env, net::Ipv6Addr, path::PathBuf, str::FromStr};
+use std::{collections::BTreeMap, env, fs, net::Ipv6Addr, path::PathBuf, str::FromStr};
 
 use color_eyre::eyre::{Context, Result};
 use ipnet::Ipv6Net;
-use log::{debug, info, warn};
+use log::{debug, error, info, warn};
 use serde::{Deserialize, Serialize};
+use walkdir_minimal::WalkDir;
 
 use crate::common::{
     Ipv6AddrMapping, Ipv6NetMapping,
@@ -59,7 +60,7 @@ impl Action {
 
     pub async fn run(mut self) -> Result<()> {
         let mut skipped = 0;
-        let mut changed = 0;
+        let mut changed = vec![];
 
         let valid_mappings: Vec<_> = self
             .mapping
@@ -86,20 +87,52 @@ impl Action {
 
                 if *current_mapped_ip != new_public_ip {
                     debug!(
-                        "Updating device {}: {} -> {}",
-                        device_address, current_mapped_ip, new_public_ip
+                        "Updating device {device_address}: {current_mapped_ip} -> {new_public_ip}"
                     );
+                    changed.push((*current_mapped_ip, new_public_ip));
                     *current_mapped_ip = new_public_ip;
-                    changed += 1;
                 } else {
                     skipped += 1;
                 }
             }
         }
 
+        info!("Replacing: {} addresses:", changed.len());
+        for (current, new) in &changed {
+            info!("- {current} with {new}");
+        }
+
+        for entry in WalkDir::new(&self.configuration.directory)?.follow_links(false) {
+            match entry {
+                Ok(entry) => {
+                    let path = entry.path();
+                    if path.is_file()
+                        && let Ok(contents) = fs::read_to_string(path)
+                    {
+                        for (current, new) in &changed {
+                            let (current, new) = (current.to_string(), new.to_string());
+                            if contents.contains(&current) {
+                                let contents = contents.replace(&current, &new);
+                                fs::write(path, contents)?;
+                            }
+                        }
+                    } else {
+                        // Silently skip non-UTF8 (binary) files or read errors
+                        continue;
+                    }
+                }
+                Err(error) => {
+                    error!(
+                        "Failed to read entry in provided directory {:?}: {error:?}",
+                        &self.configuration.directory
+                    );
+                }
+            }
+        }
+
         info!(
-            "Run complete: {} addresses updated, {} skipped.",
-            changed, skipped
+            "Run complete: {} addresses updated, {skipped} skipped.",
+            changed.len()
         );
 
         self.configuration

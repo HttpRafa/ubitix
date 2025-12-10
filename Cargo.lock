@@ -2309,6 +2309,7 @@ dependencies = [
  "simplelog",
  "tokio",
  "toml",
+ "walkdir_minimal",
 ]
 
 [[package]]
@@ -2368,6 +2369,12 @@ dependencies = [
  "same-file",
  "winapi-util",
 ]
+
+[[package]]
+name = "walkdir_minimal"
+version = "1.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "eaa3d06a27f3e1b052791d23dfa71fb9fe45c7a4f25703b13030143e376b7137"
 
 [[package]]
 name = "want"

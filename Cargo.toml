@@ -37,3 +37,4 @@ iptables = "0.6.0"
 
 # Standard OS-specific directories
 directories = "6.0.0"
+walkdir_minimal = "1.0.1"
