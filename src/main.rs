@@ -34,7 +34,6 @@ async fn main() -> Result<()> {
     if cli.gateway {
         let gateway = Gateway::load().await?;
         info!("Startup finished!");
-        info!("Starting file watcher...");
         gateway.run().await
     } else if cli.action {
         let action = Action::load().await?;

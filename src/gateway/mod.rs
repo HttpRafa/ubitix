@@ -137,6 +137,7 @@ impl Gateway {
 
         let file = self.configuration.file.clone();
 
+        info!("Starting file watcher...");
         select! {
             _ = signal::ctrl_c() => {
 
@@ -149,6 +150,7 @@ impl Gateway {
             }
         }
 
+        info!("Starting cleanup...");
         IPTableRules::delete_all_rules(&self.iptables, &self.state.mapping).await;
         Ok(())
     }

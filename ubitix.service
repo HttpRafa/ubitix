@@ -1,0 +1,14 @@
+[Unit]
+Description=A tool that automatically detects IPv6 prefix changes and updates iptables NAT rules, and triggers a GitHub Actions workflow.
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=root
+ExecStart=/usr/local/bin/ubitix --gateway
+KillSignal=SIGINT
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

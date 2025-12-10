@@ -87,6 +87,9 @@ jobs:
     needs: [build]
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout Code
+        uses: actions/checkout@v6
+
       - name: Download All Artifacts
         uses: actions/download-artifact@v5
         with:
@@ -98,4 +101,6 @@ jobs:
         with:
           draft: true
           prerelease: ${{ contains(github.ref, 'rc') || contains(github.ref, 'beta') || contains(github.ref, 'alpha') }}
-          files: release-assets/*
+          files: |
+            release-assets/*
+            ubitix.service
