@@ -4,13 +4,12 @@ use color_eyre::eyre::{Result, eyre};
 use ipnet::Ipv6Net;
 use log::warn;
 
+use crate::common::Ipv6NetMapping;
+
 pub struct SubnetCalculator;
 
 impl SubnetCalculator {
-    pub async fn calc(
-        prefix: &Ipv6Net,
-        private_networks: &[Ipv6Net],
-    ) -> Result<HashMap<Ipv6Net, Ipv6Net>> {
+    pub async fn calc(prefix: &Ipv6Net, private_networks: &[Ipv6Net]) -> Result<Ipv6NetMapping> {
         if prefix.prefix_len() > 64 {
             return Err(eyre!(
                 "The detected prefix must be /64 or shorter to be split into /64 subnets."

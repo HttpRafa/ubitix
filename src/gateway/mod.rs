@@ -1,4 +1,4 @@
-use std::{error::Error, path::PathBuf, str::FromStr};
+use std::{path::PathBuf, str::FromStr};
 
 use color_eyre::eyre::{Result, eyre};
 use ipnet::Ipv6Net;
@@ -8,16 +8,17 @@ use octocrab::Octocrab;
 use regex::Regex;
 use serde::Deserialize;
 use serde_json::json;
-use tokio::fs;
+use tokio::{fs, select, signal};
 
 use crate::{
     common::{
         Ipv6NetMapping, State,
         storage::{LoadFromTomlFile, SaveToTomlFile, config_gateway_file, state_gateway_file},
     },
-    gateway::{subnet::SubnetCalculator, watcher::FileWatcher},
+    gateway::{rules::IPTableRules, subnet::SubnetCalculator, watcher::FileWatcher},
 };
 
+pub mod rules;
 pub mod subnet;
 pub mod watcher;
 
@@ -100,42 +101,6 @@ impl Gateway {
         Ok(())
     }
 
-    async fn append_rules(
-        &self,
-        public: &Ipv6Net,
-        private: &Ipv6Net,
-    ) -> Result<(), Box<dyn Error>> {
-        self.iptables.append(
-            "nat",
-            "POSTROUTING",
-            &format!("-s {private} -j NETMAP --to {public}"),
-        )?;
-        self.iptables.append(
-            "nat",
-            "PREROUTING",
-            &format!("-d {public} -j NETMAP --to {private}"),
-        )?;
-        Ok(())
-    }
-
-    async fn delete_rules(
-        &self,
-        public: &Ipv6Net,
-        private: &Ipv6Net,
-    ) -> Result<(), Box<dyn Error>> {
-        self.iptables.delete(
-            "nat",
-            "POSTROUTING",
-            &format!("-s {private} -j NETMAP --to {public}"),
-        )?;
-        self.iptables.delete(
-            "nat",
-            "PREROUTING",
-            &format!("-d {public} -j NETMAP --to {private}"),
-        )?;
-        Ok(())
-    }
-
     pub async fn handle_line(&mut self, line: String) -> Result<()> {
         debug!("> {line}");
         if let Some(captures) = self.regex.captures(&line)
@@ -146,22 +111,10 @@ impl Gateway {
             if self.state.prefix != prefix {
                 info!("Prefix change detected: {} -> {prefix}", self.state.prefix);
 
-                info!("Deleting {} old NPTv6 rules:", self.state.mapping.len());
-                for (public, private) in &self.state.mapping {
-                    info!("-: {public} <---> {private}");
-                    if let Err(error) = self.delete_rules(public, private).await {
-                        error!("Failed to delete iptables rules: {:?}", eyre!("{error}"));
-                    }
-                }
+                IPTableRules::delete_all_rules(&self.iptables, &self.state.mapping).await;
 
                 let mapping = SubnetCalculator::calc(&prefix, &self.configuration.networks).await?;
-                info!("Appending {} new NPTv6 rules:", mapping.len() * 2);
-                for (public, private) in &mapping {
-                    info!("+: {public} <---> {private}");
-                    if let Err(error) = self.append_rules(public, private).await {
-                        error!("Failed to append iptables rules: {:?}", eyre!("{error}"));
-                    }
-                }
+                IPTableRules::append_all_rules(&self.iptables, &mapping).await;
 
                 info!("Dispatching Github Workflow...");
                 if let Err(error) = self.dispatch_workflow(&prefix, &mapping).await {
@@ -180,14 +133,23 @@ impl Gateway {
     }
 
     pub async fn run(mut self) -> Result<()> {
+        IPTableRules::append_all_rules(&self.iptables, &self.state.mapping).await;
+
         let file = self.configuration.file.clone();
 
-        FileWatcher::watch(&file, &mut self, async |gateway, line| {
-            gateway.handle_line(line).await?;
-            Ok(())
-        })
-        .await?;
+        select! {
+            _ = signal::ctrl_c() => {
 
+            },
+            result = FileWatcher::watch(&file, &mut self, async |gateway, line| {
+                gateway.handle_line(line).await?;
+                Ok(())
+            }) => {
+                result?
+            }
+        }
+
+        IPTableRules::delete_all_rules(&self.iptables, &self.state.mapping).await;
         Ok(())
     }
 }
