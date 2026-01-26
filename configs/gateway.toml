@@ -3,7 +3,10 @@ file = "/var/log/messages"
 
 # The regular expression used for log matching.
 # Note: Backslashes in TOML strings need to be escaped if they are meant literally.
-regex = "Adding PD prefix ([\\da-fA-F:]+/\\d{1,3})"
+regex = "Adding PD prefix ([\\da-fA-F:]+/\\d{1,3}) with lifetime \\d+/\\d+ to interface ([a-zA-Z.0-9@]+)"
+
+# Target network interface
+interface = "eth9"
 
 # A list of networks to process.
 networks = []

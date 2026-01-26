@@ -42,6 +42,7 @@ pub struct Gateway {
 struct Configuration {
     file: PathBuf,
     regex: String,
+    interface: String,
     networks: Vec<Ipv6Net>,
     token: String,
     owner: String,
@@ -105,11 +106,22 @@ impl Gateway {
         debug!("> {line}");
         if let Some(captures) = self.regex.captures(&line)
             && let Some(prefix) = captures.get(1)
+            && let Some(interface) = captures.get(2)
         {
             let prefix = Ipv6Net::from_str(prefix.as_str())?;
+            let interface = interface.as_str();
+            if self.configuration.interface != interface {
+                info!(
+                    "Prefix change detected on a different interface ({interface}): Unknown -> {prefix} (no action taken)"
+                );
+                return Ok(());
+            }
 
             if self.state.prefix != prefix {
-                info!("Prefix change detected: {} -> {prefix}", self.state.prefix);
+                info!(
+                    "Prefix updated on target interface {interface}: {} -> {prefix}",
+                    self.state.prefix
+                );
 
                 IPTableRules::delete_all_rules(&self.iptables, &self.state.mapping).await;
 
@@ -124,7 +136,7 @@ impl Gateway {
                 self.update_state(prefix, mapping).await?;
             } else {
                 warn!(
-                    "Duplicate prefix change detected: {} -> {prefix}",
+                    "Received redundant prefix change for interface {interface}: {} -> {prefix} (no action taken)",
                     self.state.prefix
                 );
             }
