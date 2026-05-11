@@ -1,6 +1,6 @@
 [package]
 name = "ubitix"
-version = "0.0.0-nightly"
+version = "1.3.0"
 edition = "2024"
 
 [dependencies]
