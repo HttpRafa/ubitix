@@ -26,7 +26,7 @@ serde = "1.0.228"
 regex = "1.12.3"
 
 # GitHub API client
-octocrab = "0.50.0"
+octocrab = "0.54.0"
 
 # File-system notifications (cross-platform)
 notify = "8.2.0"
