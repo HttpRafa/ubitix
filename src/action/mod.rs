@@ -1,4 +1,12 @@
-use std::{collections::BTreeMap, env, fs, net::Ipv6Addr, path::PathBuf, str::FromStr};
+use std::{
+    collections::BTreeMap,
+    env,
+    fs::{self, OpenOptions},
+    io::{Read, Seek, SeekFrom, Write},
+    net::Ipv6Addr,
+    path::{Path, PathBuf},
+    str::FromStr,
+};
 
 use color_eyre::eyre::{Context, Result};
 use ipnet::Ipv6Net;
@@ -102,29 +110,33 @@ impl Action {
             info!("- {current} with {new}");
         }
 
+        let replacements: Vec<(String, String)> = changed
+            .iter()
+            .map(|(current, new)| (current.to_string(), new.to_string()))
+            .collect();
+
         for entry in WalkDir::new(&self.configuration.directory)?.follow_links(false) {
             match entry {
                 Ok(entry) => {
-                    let path = entry.path();
-                    if path.is_file()
-                        && let Ok(contents) = fs::read_to_string(path)
-                    {
-                        for (current, new) in &changed {
-                            let (current, new) = (current.to_string(), new.to_string());
-                            if contents.contains(&current) {
-                                let contents = contents.replace(&current, &new);
-                                fs::write(path, contents)?;
-                            }
+                    let file_type = match entry.file_type() {
+                        Ok(file_type) => file_type,
+                        Err(error) => {
+                            error!("Failed to stat {}: {error}", entry.path().display());
+                            continue;
                         }
-                    } else {
-                        // Silently skip non-UTF8 (binary) files or read errors
+                    };
+                    // `is_file()` is false for a symlink. Combined with the
+                    // no-follow open below, a link in the records tree cannot
+                    // redirect the write outside the directory.
+                    if !file_type.is_file() {
                         continue;
                     }
+                    rewrite_record(entry.path(), &replacements, MAX_RECORD_BYTES)?;
                 }
                 Err(error) => {
                     error!(
-                        "Failed to read entry in provided directory {:?}: {error:?}",
-                        &self.configuration.directory
+                        "Failed to read entry in provided directory {}: {error:?}",
+                        self.configuration.directory.display()
                     );
                 }
             }
@@ -151,5 +163,167 @@ impl Action {
     }
 }
 
+const MAX_RECORD_BYTES: u64 = 8 * 1024 * 1024;
+
+fn rewrite_record(path: &Path, replacements: &[(String, String)], max_bytes: u64) -> Result<()> {
+    let meta = fs::symlink_metadata(path)?;
+    if !meta.file_type().is_file() {
+        return Ok(());
+    }
+    if meta.len() > max_bytes {
+        warn!("Skipping {}: larger than {max_bytes} bytes", path.display());
+        return Ok(());
+    }
+
+    let mut file = OpenOptions::new().read(true).write(true).open(path)?;
+    if !same_file(&meta, &file.metadata()?) {
+        warn!("Skipping {}: path changed or is a symlink", path.display());
+        return Ok(());
+    }
+
+    let mut contents = String::new();
+    if let Err(error) = file.read_to_string(&mut contents) {
+        // Binary records are not rewritten. Other read failures abort the run.
+        if error.kind() == std::io::ErrorKind::InvalidData {
+            return Ok(());
+        }
+        return Err(error.into());
+    }
+
+    let updated = apply_replacements(&contents, replacements);
+    if updated == contents {
+        return Ok(());
+    }
+
+    file.seek(SeekFrom::Start(0))?;
+    file.write_all(updated.as_bytes())?;
+    file.set_len(updated.len() as u64)?;
+    Ok(())
+}
+
+/// Replace each old address once, and only on IPv6 token boundaries.
+///
+/// Replacements are planned against the original text. A plain `str::replace`
+/// would both cascade (`A -> B` then `B -> C`) and corrupt a longer address
+/// such as `2001:db8::10` when replacing `2001:db8::1`.
+fn apply_replacements(haystack: &str, replacements: &[(String, String)]) -> String {
+    let hay = haystack.as_bytes();
+    let mut out = String::with_capacity(haystack.len());
+    let mut index = 0;
+    while index < hay.len() {
+        let boundary = index == 0 || !is_ipv6_token_byte(hay[index - 1]);
+        let matched = boundary.then(|| {
+            replacements
+                .iter()
+                .filter(|pair| !pair.0.is_empty())
+                .find(|pair| {
+                    let from = pair.0.as_bytes();
+                    let end = index + from.len();
+                    hay[index..].starts_with(from)
+                        && (end >= hay.len() || !is_ipv6_token_byte(hay[end]))
+                })
+        });
+        if let Some(pair) = matched.flatten() {
+            out.push_str(&pair.1);
+            index += pair.0.len();
+            continue;
+        }
+        let ch = haystack[index..]
+            .chars()
+            .next()
+            .expect("index is inside the string");
+        out.push(ch);
+        index += ch.len_utf8();
+    }
+    out
+}
+
+fn is_ipv6_token_byte(byte: u8) -> bool {
+    // '.' is punctuation as often as it is part of an IPv4-mapped address.
+    // A longer address still continues with a hex digit (`::1` vs `::10`).
+    byte.is_ascii_hexdigit() || byte == b':'
+}
+
+fn same_file(before: &fs::Metadata, opened: &fs::Metadata) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        before.dev() == opened.dev() && before.ino() == opened.ino()
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (before, opened);
+        true
+    }
+}
+
 impl LoadFromTomlFile for Configuration {}
 impl SaveToTomlFile for Configuration {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::symlink;
+
+    fn scratch(name: &str) -> PathBuf {
+        let path = std::env::temp_dir().join(format!("ubitix-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&path);
+        fs::create_dir_all(&path).unwrap();
+        path
+    }
+
+    #[test]
+    fn replacement_does_not_eat_a_longer_address_or_cascade() {
+        let pairs = [
+            ("2001:db8::1".to_string(), "2001:db8::2".to_string()),
+            ("2001:db8::2".to_string(), "2001:db8::9".to_string()),
+        ];
+        let updated = apply_replacements(
+            "keep 2001:db8::10 and 2001:db8::1:2, change 2001:db8::1 and 2001:db8::2.",
+            &pairs,
+        );
+        assert_eq!(
+            updated,
+            "keep 2001:db8::10 and 2001:db8::1:2, change 2001:db8::2 and 2001:db8::9."
+        );
+    }
+
+    #[test]
+    fn rewrite_skips_symlinks_and_updates_regular_files() {
+        let dir = scratch("records");
+        let outside = scratch("outside");
+        let secret = outside.join("secret.txt");
+        fs::write(&secret, "2001:db8::1\n").unwrap();
+        symlink(&secret, dir.join("link.txt")).unwrap();
+        fs::write(dir.join("ok.txt"), "ip 2001:db8::1;\n").unwrap();
+        fs::write(dir.join("big.txt"), "2001:db8::1\n").unwrap();
+
+        let replacements = [("2001:db8::1".to_string(), "2001:db8::2".to_string())];
+        rewrite_record(
+            dir.join("ok.txt").as_path(),
+            &replacements,
+            MAX_RECORD_BYTES,
+        )
+        .unwrap();
+        rewrite_record(
+            dir.join("link.txt").as_path(),
+            &replacements,
+            MAX_RECORD_BYTES,
+        )
+        .unwrap();
+        rewrite_record(dir.join("big.txt").as_path(), &replacements, 4).unwrap();
+
+        assert_eq!(fs::read_to_string(&secret).unwrap(), "2001:db8::1\n");
+        assert_eq!(
+            fs::read_to_string(dir.join("ok.txt")).unwrap(),
+            "ip 2001:db8::2;\n"
+        );
+        assert_eq!(
+            fs::read_to_string(dir.join("big.txt")).unwrap(),
+            "2001:db8::1\n"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+        let _ = fs::remove_dir_all(&outside);
+    }
+}
