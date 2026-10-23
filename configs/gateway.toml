@@ -22,3 +22,9 @@ repository = "some-repository"
 
 # The workflow file name to trigger.
 workflow = "some-workflow.yml"
+
+# Apply a prefix from the log only when the kernel already has that exact
+# prefix on the named interface, or as a route on lo. This stops a process
+# that can write to syslog (for example `logger`) from rewriting NAT rules.
+# Set to false only if this host never installs the delegated prefix locally.
+verify_prefix = true

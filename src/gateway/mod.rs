@@ -3,7 +3,7 @@ use std::{path::PathBuf, str::FromStr};
 use color_eyre::eyre::{Result, eyre};
 use ipnet::Ipv6Net;
 use iptables::IPTables;
-use log::{debug, error, info, warn};
+use log::{error, info, warn};
 use octocrab::Octocrab;
 use regex::Regex;
 use serde::Deserialize;
@@ -18,6 +18,7 @@ use crate::{
     gateway::{rules::IPTableRules, subnet::SubnetCalculator, watcher::FileWatcher},
 };
 
+pub mod prefix;
 pub mod rules;
 pub mod subnet;
 pub mod watcher;
@@ -48,6 +49,14 @@ struct Configuration {
     owner: String,
     repository: String,
     workflow: String,
+    /// When true, a prefix from the log is applied only if the kernel already
+    /// has that exact prefix on the named interface (or as a route on `lo`).
+    #[serde(default = "default_verify_prefix")]
+    verify_prefix: bool,
+}
+
+fn default_verify_prefix() -> bool {
+    true
 }
 
 impl Gateway {
@@ -60,6 +69,8 @@ impl Gateway {
                 }
                 fs::write(&file, DEFAULT_CONFIG).await?;
             }
+            // The file holds a GitHub token. Refuse symlinks and drop group/other access.
+            crate::common::storage::restrict_secret_file(&file)?;
             file
         })
         .await?;
@@ -103,7 +114,6 @@ impl Gateway {
     }
 
     pub async fn handle_line(&mut self, line: String) -> Result<()> {
-        debug!("> {line}");
         if let Some(captures) = self.regex.captures(&line)
             && let Some(prefix) = captures.get(1)
             && let Some(interface) = captures.get(2)
@@ -118,6 +128,30 @@ impl Gateway {
             }
 
             if self.state.prefix != prefix {
+                if !prefix::acceptable_delegated_prefix(&prefix) {
+                    warn!(
+                        "Ignoring prefix {prefix} on {interface}: refusing link-local, multicast, loopback, or longer-than-/64 prefixes"
+                    );
+                    return Ok(());
+                }
+                if self.configuration.verify_prefix {
+                    match prefix::delegated_prefix_is_installed(&prefix, interface).await {
+                        Ok(true) => {}
+                        Ok(false) => {
+                            warn!(
+                                "Ignoring prefix {prefix} on {interface}: the kernel has no matching route or address. Set verify_prefix = false only when this host does not install delegated prefixes locally"
+                            );
+                            return Ok(());
+                        }
+                        Err(error) => {
+                            error!(
+                                "Refusing prefix {prefix} on {interface}: could not verify it against the kernel: {error}"
+                            );
+                            return Ok(());
+                        }
+                    }
+                }
+
                 info!(
                     "Prefix updated on target interface {interface}: {} -> {prefix}",
                     self.state.prefix
@@ -125,7 +159,7 @@ impl Gateway {
 
                 IPTableRules::delete_all_rules(&self.iptables, &self.state.mapping).await;
 
-                let mapping = SubnetCalculator::calc(&prefix, &self.configuration.networks).await?;
+                let mapping = SubnetCalculator::calc(&prefix, &self.configuration.networks)?;
                 IPTableRules::append_all_rules(&self.iptables, &mapping).await;
 
                 info!("Dispatching Github Workflow...");
@@ -172,3 +206,34 @@ impl LoadFromTomlFile for Configuration {}
 
 impl SaveToTomlFile for State {}
 impl LoadFromTomlFile for State {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shipped_gateway_config_enables_prefix_verification() {
+        let configuration: Configuration = toml::from_str(DEFAULT_CONFIG).unwrap();
+        assert!(configuration.verify_prefix);
+        assert_eq!(configuration.interface, "eth9");
+        assert_eq!(configuration.file, PathBuf::from("/var/log/messages"));
+    }
+
+    #[test]
+    fn existing_configs_verify_prefixes_by_default() {
+        let configuration: Configuration = toml::from_str(
+            r#"
+            file = "/var/log/messages"
+            regex = "prefix"
+            interface = "ppp1"
+            networks = []
+            token = "some-token"
+            owner = "owner"
+            repository = "repo"
+            workflow = "records.yml"
+            "#,
+        )
+        .unwrap();
+        assert!(configuration.verify_prefix);
+    }
+}
