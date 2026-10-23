@@ -11,10 +11,18 @@ on:
         type: string
         description: "IPv6 to IPv6 Mapping"
         required: true
-      
+
+# workflow_dispatch inputs are attacker-controlled for anyone who can dispatch
+# this workflow, including the gateway token. Keep the job token empty and
+# pass inputs through the environment so they are not shell-parsed.
+permissions: {}
+
 jobs:
   update:
     runs-on: ubuntu-latest
     steps:
       - name: Echo inputs
-        run: echo "${{ github.event.inputs.prefix }} and ${{ github.event.inputs.mapping }}"
+        env:
+          IPV6_PREFIX: ${{ github.event.inputs.prefix }}
+          IPV6_MAPPING: ${{ github.event.inputs.mapping }}
+        run: echo "$IPV6_PREFIX and $IPV6_MAPPING"
