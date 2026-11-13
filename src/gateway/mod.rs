@@ -118,14 +118,16 @@ impl Gateway {
             }
 
             if self.state.prefix != prefix {
+                // Resolve the mapping before touching live rules. A rejected
+                // prefix must leave the current NAT rules and saved state alone.
+                let mapping = SubnetCalculator::calc(&prefix, &self.configuration.networks)?;
+
                 info!(
                     "Prefix updated on target interface {interface}: {} -> {prefix}",
                     self.state.prefix
                 );
 
                 IPTableRules::delete_all_rules(&self.iptables, &self.state.mapping).await;
-
-                let mapping = SubnetCalculator::calc(&prefix, &self.configuration.networks).await?;
                 IPTableRules::append_all_rules(&self.iptables, &mapping).await;
 
                 info!("Dispatching Github Workflow...");
