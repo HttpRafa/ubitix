@@ -1,12 +1,13 @@
 use std::{
-    env,
+    env, io,
     path::{Path, PathBuf},
 };
 
 use color_eyre::eyre::{Result, eyre};
 use directories::ProjectDirs;
 use serde::{Serialize, de::DeserializeOwned};
-use tokio::fs;
+
+use crate::common::secret::{ensure_private_dir, read_secret_file, write_secret_file};
 
 const GATEWAY_FILE_NAME: &str = "gateway.toml";
 const ACTION_FILE_NAME: &str = "ubitix.toml";
@@ -31,17 +32,27 @@ pub fn config_action_file() -> Result<PathBuf> {
 
 pub trait SaveToTomlFile: Serialize {
     async fn save(&self, path: &Path, create_parent: bool) -> Result<()> {
-        if create_parent && let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).await?;
+        if create_parent
+            && let Some(parent) = path
+                .parent()
+                .filter(|parent| !parent.as_os_str().is_empty())
+        {
+            match std::fs::symlink_metadata(parent) {
+                Ok(_) => {}
+                Err(err) if err.kind() == io::ErrorKind::NotFound => {
+                    ensure_private_dir(parent)?;
+                }
+                Err(err) => return Err(err.into()),
+            }
         }
-        fs::write(path, toml::to_string(self)?).await?;
+        write_secret_file(path, &toml::to_string(self)?)?;
         Ok(())
     }
 }
 
 pub trait LoadFromTomlFile: DeserializeOwned {
     async fn from_file(path: &Path) -> Result<Self> {
-        let data = fs::read_to_string(path).await?;
+        let data = read_secret_file(path)?;
         let config = toml::from_str(&data)?;
         Ok(config)
     }
