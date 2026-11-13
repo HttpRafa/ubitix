@@ -1,8 +1,10 @@
 use std::{
+    ffi::OsStr,
     fs::{DirBuilder, File, OpenOptions, Permissions},
     io::{self, Read, Write},
     os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt},
-    path::Path,
+    path::{Path, PathBuf},
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 use color_eyre::eyre::{Result, eyre};
@@ -49,22 +51,59 @@ pub(crate) fn read_secret_file(path: &Path) -> Result<String> {
 
 /// Create or replace a secret file without following a trailing symlink.
 ///
-/// An existing symlink fails the open. The target is not created, read, or truncated.
-/// New files are created with `O_CREAT | O_EXCL | O_NOFOLLOW` and mode `0600`, then
-/// `fchmod`'d so umask cannot widen the mode.
+/// An existing symlink is left in place. The contents are written to a new `0600`
+/// file in the same directory and renamed over `path`, so a crash cannot leave
+/// an empty file where the previous contents were truncated.
 pub(crate) fn write_secret_file(path: &Path, contents: &str) -> Result<()> {
-    let mut file = match open_nofollow(path, true) {
-        Ok(file) => {
-            file.set_permissions(Permissions::from_mode(FILE_MODE))?;
-            file.set_len(0)?;
-            file
+    match std::fs::symlink_metadata(path) {
+        Ok(meta) if meta.file_type().is_symlink() => {
+            return Err(eyre!("refusing to use symlink {}", path.display()));
         }
-        Err(err) if err.kind() == io::ErrorKind::NotFound => create_secret_file(path)?,
-        Err(err) => return Err(nofollow_error(path, err)),
-    };
-    file.write_all(contents.as_bytes())?;
-    file.flush()?;
+        Ok(meta) if meta.is_file() => {}
+        Ok(_) => return Err(eyre!("{} is not a regular file", path.display())),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => {}
+        Err(err) => return Err(err.into()),
+    }
+
+    let temporary = temporary_secret_path(path);
+    let write_result = (|| {
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(FILE_MODE)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(&temporary)
+            .map_err(|err| nofollow_error(&temporary, err))?;
+        file.set_permissions(Permissions::from_mode(FILE_MODE))?;
+        file.write_all(contents.as_bytes())?;
+        file.sync_all()?;
+        Ok(())
+    })();
+    if let Err(error) = write_result {
+        let _ = std::fs::remove_file(&temporary);
+        return Err(error);
+    }
+
+    if let Err(error) = std::fs::rename(&temporary, path) {
+        let _ = std::fs::remove_file(&temporary);
+        return Err(error.into());
+    }
     Ok(())
+}
+
+fn temporary_secret_path(path: &Path) -> PathBuf {
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let name = path.file_name().unwrap_or_else(|| OsStr::new("secret"));
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or(0);
+    let mut temporary_name = name.to_os_string();
+    temporary_name.push(format!(".{}.{nanos}.tmp", std::process::id()));
+    parent.join(temporary_name)
 }
 
 /// Create `path` at mode `0700` and refuse a symlink at that directory.
@@ -98,19 +137,6 @@ pub(crate) fn ensure_private_dir(path: &Path) -> Result<()> {
         }
         Err(err) => Err(err.into()),
     }
-}
-
-fn create_secret_file(path: &Path) -> Result<File> {
-    let file = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create_new(true)
-        .mode(FILE_MODE)
-        .custom_flags(libc::O_NOFOLLOW)
-        .open(path)
-        .map_err(|err| nofollow_error(path, err))?;
-    file.set_permissions(Permissions::from_mode(FILE_MODE))?;
-    Ok(file)
 }
 
 fn chmod_dir_nofollow(path: &Path) -> Result<()> {
@@ -191,9 +217,14 @@ mod tests {
         ));
         assert_eq!(read_secret_file(&file).unwrap(), "token = \"secret\"\n");
 
-        let created = mode_bits(&file);
-        if created == 0o600 {
-            assert_eq!(mode_bits(dir.path()), 0o700);
+        let file_mode = mode_bits(&file);
+        let dir_mode = mode_bits(dir.path());
+        // Some temp filesystems ignore chmod and report 0777 for every inode.
+        if file_mode == 0o777 && dir_mode == 0o777 {
+            eprintln!("filesystem does not store unix permissions; skipping mode asserts");
+        } else {
+            assert_eq!(file_mode, 0o600);
+            assert_eq!(dir_mode, 0o700);
 
             let wide = dir.path().join("wide.toml");
             let mut opened = OpenOptions::new()
@@ -211,6 +242,16 @@ mod tests {
             assert_eq!(read_secret_file(&wide).unwrap(), "loose\n");
             assert_eq!(mode_bits(&wide), 0o600);
         }
+
+        write_secret_file(&file, "token = \"replaced\"\n").unwrap();
+        assert_eq!(read_secret_file(&file).unwrap(), "token = \"replaced\"\n");
+        assert!(dir.path().read_dir().unwrap().all(|entry| {
+            !entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .ends_with(".tmp")
+        }));
 
         let target = dir.path().join("outside");
         fs::write(&target, "original").unwrap();

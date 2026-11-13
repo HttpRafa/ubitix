@@ -78,7 +78,18 @@ impl Gateway {
         }
         let state = match classify_secret_path(&state_path)? {
             SecretPath::Missing => State::default(),
-            SecretPath::File => State::from_file(&state_path).await?,
+            // A half-written state file must not crash-loop `Restart=always`.
+            // Symlinks are already rejected by `classify_secret_path`.
+            SecretPath::File => match State::from_file(&state_path).await {
+                Ok(state) => state,
+                Err(error) => {
+                    warn!(
+                        "Ignoring unreadable gateway state at {}: {error:?}",
+                        state_path.display()
+                    );
+                    State::default()
+                }
+            },
         };
 
         Ok(Self {
