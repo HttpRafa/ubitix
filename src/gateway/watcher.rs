@@ -10,10 +10,8 @@ use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher};
 use tokio::{
     fs::File,
     io::{AsyncReadExt, AsyncSeekExt},
-    sync::mpsc::channel,
+    sync::mpsc::unbounded_channel,
 };
-
-const CHANNEL_BUFFER_SIZE: usize = 32;
 /// rsyslog's usual message cap. Longer records are discarded through the next newline.
 const MAX_LINE_LEN: usize = 8 * 1024;
 
@@ -80,44 +78,59 @@ fn decode_line(bytes: &[u8]) -> String {
     String::from_utf8_lossy(bytes).into_owned()
 }
 
-/// Reopen `path` when logrotate replaces or truncates it.
+struct FollowedFile {
+    file: File,
+    dev: u64,
+    ino: u64,
+}
+
+/// Directory that receives create, delete, and modify events for `path`.
 ///
-/// Returns false when the path is missing and this event should be skipped.
-/// After a reopen the cursor is zero, so a prefix already written to the new
-/// file is read by the caller. The first open is unchanged and still starts at EOF.
-async fn reopen_if_rotated(
-    file: &mut File,
+/// The watch is installed once, before the event loop. Reconfiguring it from
+/// the loop deadlocks: `watch` waits on the notify thread, and that thread is
+/// blocked in the event callback when the channel is full.
+fn watch_directory(path: &Path) -> &Path {
+    path.parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."))
+}
+
+/// Point `followed` at the current file, or clear it when the path is gone.
+///
+/// A replaced or truncated file is reopened from the start. The caller keeps
+/// watching the parent directory, so a later create is still delivered.
+async fn sync_followed_file(
+    followed: &mut Option<FollowedFile>,
     path: &Path,
     position: &mut u64,
     carry: &mut LineCarry,
-    watcher: &mut RecommendedWatcher,
 ) -> Result<bool> {
     let path_meta = match tokio::fs::metadata(path).await {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == ErrorKind::NotFound => {
             error!("Watched file is missing: {}", path.display());
+            *followed = None;
+            *position = 0;
+            *carry = LineCarry::default();
             return Ok(false);
         }
         Err(error) => return Err(error.into()),
     };
 
-    let open_meta = file.metadata().await?;
-    let inode_changed = open_meta.dev() != path_meta.dev() || open_meta.ino() != path_meta.ino();
-    let shrunk = path_meta.len() < *position;
-    if !inode_changed && !shrunk {
+    let same_file = followed
+        .as_ref()
+        .is_some_and(|open| open.dev == path_meta.dev() && open.ino == path_meta.ino());
+    if same_file && path_meta.len() >= *position {
         return Ok(true);
     }
 
-    // Arm the new inode before reading so writes that land during the read
-    // still produce a later event. A shrink keeps the same watch.
-    if inode_changed {
-        if let Err(error) = watcher.unwatch(path) {
-            error!("Failed to drop watch on rotated file: {error:?}");
-        }
-        watcher.watch(path, RecursiveMode::NonRecursive)?;
-    }
-
-    *file = File::open(path).await?;
+    let file = File::open(path).await?;
+    let open_meta = file.metadata().await?;
+    *followed = Some(FollowedFile {
+        file,
+        dev: open_meta.dev(),
+        ino: open_meta.ino(),
+    });
     *position = 0;
     *carry = LineCarry::default();
     Ok(true)
@@ -128,38 +141,45 @@ impl FileWatcher {
     where
         F: AsyncFn(&mut D, String) -> Result<()>,
     {
-        let mut file = File::open(path).await?;
+        let file = File::open(path).await?;
         // Existing lines are not replayed. Later reads start from this cursor.
-        let mut position = file.metadata().await?.len();
+        let meta = file.metadata().await?;
+        let mut position = meta.len();
+        let mut followed = Some(FollowedFile {
+            dev: meta.dev(),
+            ino: meta.ino(),
+            file,
+        });
         let mut carry = LineCarry::default();
 
-        let (sender, mut receiver) = channel(CHANNEL_BUFFER_SIZE);
+        // `send` does not block. A blocking send here deadlocks with `watch`:
+        // the notify thread sits in the callback while `watch` waits for it.
+        let (sender, mut receiver) = unbounded_channel();
         let mut watcher = RecommendedWatcher::new(
             move |result| {
-                sender
-                    .blocking_send(result)
-                    .expect("Failed to send watch event to sender")
+                let _ = sender.send(result);
             },
             Config::default(),
         )?;
-        watcher.watch(path, RecursiveMode::NonRecursive)?;
+        watcher.watch(watch_directory(path), RecursiveMode::NonRecursive)?;
 
         let mut buffer = [0_u8; MAX_LINE_LEN];
         while let Some(result) = receiver.recv().await {
             match result {
                 Ok(_event) => {
-                    if !reopen_if_rotated(&mut file, path, &mut position, &mut carry, &mut watcher)
-                        .await?
-                    {
+                    if !sync_followed_file(&mut followed, path, &mut position, &mut carry).await? {
                         continue;
                     }
-                    if file.metadata().await?.len() == position {
+                    let Some(open) = followed.as_mut() else {
+                        continue;
+                    };
+                    if open.file.metadata().await?.len() == position {
                         continue;
                     }
 
-                    file.seek(SeekFrom::Start(position)).await?;
+                    open.file.seek(SeekFrom::Start(position)).await?;
                     loop {
-                        let read = file.read(&mut buffer).await?;
+                        let read = open.file.read(&mut buffer).await?;
                         if read == 0 {
                             break;
                         }
