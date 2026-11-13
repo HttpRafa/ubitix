@@ -6,6 +6,7 @@ use std::{
 use ipnet::Ipv6Net;
 use serde::{Deserialize, Serialize};
 
+pub mod secret;
 pub mod storage;
 
 pub type Ipv6NetMapping = HashMap<Ipv6Net, Ipv6Net>;

@@ -1,4 +1,4 @@
-use std::{path::PathBuf, str::FromStr};
+use std::{io, path::PathBuf, str::FromStr};
 
 use color_eyre::eyre::{Result, eyre};
 use ipnet::Ipv6Net;
@@ -8,11 +8,12 @@ use octocrab::Octocrab;
 use regex::Regex;
 use serde::Deserialize;
 use serde_json::json;
-use tokio::{fs, select, signal};
+use tokio::{select, signal};
 
 use crate::{
     common::{
         Ipv6NetMapping, State,
+        secret::{SecretPath, classify_secret_path, ensure_private_dir, write_secret_file},
         storage::{LoadFromTomlFile, SaveToTomlFile, config_gateway_file, state_gateway_file},
     },
     gateway::{rules::IPTableRules, subnet::SubnetCalculator, watcher::FileWatcher},
@@ -52,17 +53,44 @@ struct Configuration {
 
 impl Gateway {
     pub async fn load() -> Result<Self> {
-        let configuration = Configuration::from_file(&{
-            let file = config_gateway_file()?;
-            if !file.exists() {
-                if let Some(parent) = file.parent() {
-                    fs::create_dir_all(parent).await?;
-                }
-                fs::write(&file, DEFAULT_CONFIG).await?;
+        let file = config_gateway_file()?;
+        if let Some(parent) = file
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+        {
+            ensure_private_dir(parent)?;
+        }
+        if matches!(classify_secret_path(&file)?, SecretPath::Missing) {
+            write_secret_file(&file, DEFAULT_CONFIG)?;
+        }
+        let configuration = Configuration::from_file(&file).await?;
+
+        let state_path = state_gateway_file()?;
+        if let Some(parent) = state_path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+        {
+            match std::fs::symlink_metadata(parent) {
+                Ok(_) => ensure_private_dir(parent)?,
+                Err(err) if err.kind() == io::ErrorKind::NotFound => {}
+                Err(err) => return Err(err.into()),
             }
-            file
-        })
-        .await?;
+        }
+        let state = match classify_secret_path(&state_path)? {
+            SecretPath::Missing => State::default(),
+            // A half-written state file must not crash-loop `Restart=always`.
+            // Symlinks are already rejected by `classify_secret_path`.
+            SecretPath::File => match State::from_file(&state_path).await {
+                Ok(state) => state,
+                Err(error) => {
+                    warn!(
+                        "Ignoring unreadable gateway state at {}: {error:?}",
+                        state_path.display()
+                    );
+                    State::default()
+                }
+            },
+        };
 
         Ok(Self {
             iptables: iptables::new(true).map_err(|error| eyre!("{error:?}"))?,
@@ -70,9 +98,7 @@ impl Gateway {
             octocrab: Octocrab::builder()
                 .personal_token(configuration.token.clone())
                 .build()?,
-            state: State::from_file(&state_gateway_file()?)
-                .await
-                .unwrap_or_default(),
+            state,
             configuration,
         })
     }
@@ -80,7 +106,14 @@ impl Gateway {
     async fn update_state(&mut self, prefix: Ipv6Net, mapping: Ipv6NetMapping) -> Result<()> {
         self.state.prefix = prefix;
         self.state.mapping = mapping;
-        self.state.save(&state_gateway_file()?, true).await?;
+        let path = state_gateway_file()?;
+        if let Some(parent) = path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+        {
+            ensure_private_dir(parent)?;
+        }
+        self.state.save(&path, false).await?;
         Ok(())
     }
 
