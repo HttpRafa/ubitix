@@ -29,7 +29,7 @@ regex = "1.13.1"
 octocrab = "0.54.1"
 
 # File-system notifications (cross-platform)
-notify = "8.2.0"
+notify = "9.0.0"
 
 # IP network parsing and utilities
 ipnet = { version = "2.12.2", features = ["serde"] }
